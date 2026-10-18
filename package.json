@@ -1,0 +1,25 @@
+{
+  "name": "ratchet",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Ratchet: A durable workflow and AI agent engine built on NestJS and PostgreSQL",
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "jest --config jest.config.js",
+    "test:unit": "jest --selectProjects core store",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down -v",
+    "db:up": "docker compose up -d",
+    "db:down": "docker compose down -v",
+    "db:migrate": "pnpm --filter @ratchet/store migrate"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.12",
+    "@types/node": "^20.14.0",
+    "@types/pg": "^8.11.6",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.1.5",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.5.2"
+  }
+}

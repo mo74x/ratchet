@@ -1,0 +1,13 @@
+{
+  "name": "@ratchet/store",
+  "version": "0.1.0",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "migrate": "ts-node src/migrate.ts"
+  },
+  "dependencies": {
+    "pg": "^8.12.0"
+  }
+}
