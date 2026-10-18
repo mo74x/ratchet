@@ -1,3 +1,9 @@
+export interface StepOptions {
+  /** Maximum time a single step execution attempt may run (e.g. '5s', 5000) */
+  startToCloseTimeout?: number | `${number}${'ms' | 's' | 'm' | 'h' | 'd'}`;
+  /** Override default max_attempts (default: 5) */
+  maxAttempts?: number;
+}
 export class NonDeterminismError extends Error {
   public readonly workflowId: string;
   public readonly stepSeq: number;
@@ -50,6 +56,8 @@ export type SuspensionReason =
       stepName: string;
       alreadyScheduled: boolean;
       handler: (idempotencyKey: string) => Promise<unknown> | unknown;
+      timeoutMs?: number;
+      maxAttempts?: number;
     }
   | {
       kind: 'sleep';
@@ -86,3 +94,14 @@ export function isRatchetControlSignal(err: unknown): boolean {
       (err as any).isRatchetControlSignal === true)
   );
 }
+
+export class StepTimeoutError extends Error {
+  constructor(
+    public readonly stepName: string,
+    public readonly timeoutMs: number,
+  ) {
+    super(`Step "${stepName}" timed out after ${timeoutMs}ms (startToCloseTimeout)`);
+    this.name = 'StepTimeoutError';
+  }
+}
+

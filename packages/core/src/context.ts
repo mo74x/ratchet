@@ -1,33 +1,49 @@
 import * as crypto from 'crypto';
+import { DurationInput, parseDurationMs } from './duration';
 import { NewWorkflowEvent, WorkflowEvent } from './events';
 import {
   NonDeterminismError,
   StepExecutionError,
+  StepOptions,
   WorkflowExplicitFailureError,
   WorkflowSuspendedSignal,
 } from './errors';
 
 export type StepHandler<T> = (idempotencyKey: string) => Promise<T> | T;
 
+export interface WaitForSignalOptions {
+  timeout?: DurationInput;
+}
 
 export interface WorkflowContext {
   readonly workflowId: string;
-  step<T>(name: string, fn: StepHandler<T>): Promise<T>;
+  step<T>(name: string, fn: StepHandler<T>, options?: StepOptions): Promise<T>;
+  sleep(duration: DurationInput): Promise<void>;
+  /**
+   * Waits for an external signal with `name`.
+   * Returns the signal payload, or `null` if the optional `timeout` expires first.
+   */
+  waitForSignal<T = any>(
+    name: string,
+    options?: WaitForSignalOptions,
+  ): Promise<T | null>;
   now(): Promise<number>;
   random(): Promise<number>;
   uuid(): Promise<string>;
   fail(reason: string): never;
 }
 
-// Helper types for indexing
 interface IndexedStepEvents {
   scheduled?: WorkflowEvent;
   completed?: WorkflowEvent;
   failed?: WorkflowEvent;
   valueRecorded?: WorkflowEvent;
+  timerStarted?: WorkflowEvent;
+  timerFired?: WorkflowEvent;
+  signalWaiting?: WorkflowEvent;
+  signalReceived?: WorkflowEvent;
 }
 
-// Replay Workflow Context
 export class ReplayWorkflowContext implements WorkflowContext {
   private currentStepSeq = 0;
   private readonly historyByStepSeq = new Map<number, IndexedStepEvents>();
@@ -57,6 +73,18 @@ export class ReplayWorkflowContext implements WorkflowContext {
         case 'ValueRecorded':
           bucket.valueRecorded = evt;
           break;
+        case 'TimerStarted':
+          bucket.timerStarted = evt;
+          break;
+        case 'TimerFired':
+          bucket.timerFired = evt;
+          break;
+        case 'SignalWaiting':
+          bucket.signalWaiting = evt;
+          break;
+        case 'SignalReceived':
+          bucket.signalReceived = evt;
+          break;
       }
       this.historyByStepSeq.set(evt.stepSeq, bucket);
     }
@@ -67,38 +95,48 @@ export class ReplayWorkflowContext implements WorkflowContext {
     return this.currentStepSeq;
   }
 
-  async step<T>(name: string, fn: StepHandler<T>): Promise<T> {
+  private describeRecorded(bucket?: IndexedStepEvents): string | null {
+    if (!bucket) return null;
+    if (bucket.scheduled || bucket.completed || bucket.failed) {
+      const evt = bucket.completed ?? bucket.failed ?? bucket.scheduled!;
+      return `Step:${evt.name}`;
+    }
+    if (bucket.valueRecorded) {
+      return `ValueRecorded:${bucket.valueRecorded.name}`;
+    }
+    if (bucket.signalWaiting || bucket.signalReceived) {
+      const evt = bucket.signalReceived ?? bucket.signalWaiting!;
+      return `Signal:${evt.name}`;
+    }
+    if (bucket.timerStarted || bucket.timerFired) {
+      return `Sleep:timer`;
+    }
+    return null;
+  }
+
+  async step<T>(
+    name: string,
+    fn: StepHandler<T>,
+    options?: StepOptions,
+  ): Promise<T> {
     const stepSeq = this.nextStepSeq();
     const recorded = this.historyByStepSeq.get(stepSeq);
+    const expectedSignature = `Step:${name}`;
+    const existingSignature = this.describeRecorded(recorded);
 
-    // 1. Determinism Guard: Check if this stepSeq was previously used for a side-effect value (now/random/uuid)
-    if (recorded?.valueRecorded) {
+    if (existingSignature && existingSignature !== expectedSignature) {
       throw new NonDeterminismError({
         workflowId: this.workflowId,
         stepSeq,
-        expected: `ValueRecorded:${recorded.valueRecorded.name}`,
-        actual: `Step:${name}`,
+        expected: existingSignature,
+        actual: expectedSignature,
       });
     }
 
-    // 2. Determinism Guard: Verify step name matches any recorded StepScheduled / StepCompleted / StepFailed
-    const existingStepEvt =
-      recorded?.completed ?? recorded?.failed ?? recorded?.scheduled;
-    if (existingStepEvt && existingStepEvt.name !== name) {
-      throw new NonDeterminismError({
-        workflowId: this.workflowId,
-        stepSeq,
-        expected: `Step:${existingStepEvt.name}`,
-        actual: `Step:${name}`,
-      });
-    }
-
-    // 3. Fast-forward if already completed
     if (recorded?.completed) {
       return recorded.completed.payload.result as T;
     }
 
-    // 4. Re-throw recorded permanent step failure if step exhausted retries
     if (recorded?.failed) {
       throw new StepExecutionError(
         name,
@@ -107,14 +145,21 @@ export class ReplayWorkflowContext implements WorkflowContext {
       );
     }
 
-    // 5. Not completed yet: emit StepScheduled if not already scheduled, then suspend
+    const timeoutMs =
+      options?.startToCloseTimeout !== undefined
+        ? parseDurationMs(options.startToCloseTimeout)
+        : undefined;
+
     const alreadyScheduled = Boolean(recorded?.scheduled);
     if (!alreadyScheduled) {
       this.pendingEvents.push({
         stepSeq,
         type: 'StepScheduled',
         name,
-        payload: {},
+        payload: {
+          timeoutMs: timeoutMs ?? null,
+          maxAttempts: options?.maxAttempts ?? null,
+        },
       });
     }
 
@@ -124,6 +169,97 @@ export class ReplayWorkflowContext implements WorkflowContext {
       stepName: name,
       alreadyScheduled,
       handler: fn,
+      timeoutMs,
+      maxAttempts: options?.maxAttempts,
+    });
+  }
+
+  async sleep(duration: DurationInput): Promise<void> {
+    const stepSeq = this.nextStepSeq();
+    const durationMs = parseDurationMs(duration);
+    const recorded = this.historyByStepSeq.get(stepSeq);
+    const existingSignature = this.describeRecorded(recorded);
+
+    if (existingSignature && existingSignature !== 'Sleep:timer') {
+      throw new NonDeterminismError({
+        workflowId: this.workflowId,
+        stepSeq,
+        expected: existingSignature,
+        actual: 'Sleep:timer',
+      });
+    }
+
+    if (recorded?.timerFired) {
+      return;
+    }
+
+    const alreadyScheduled = Boolean(recorded?.timerStarted);
+    if (!alreadyScheduled) {
+      this.pendingEvents.push({
+        stepSeq,
+        type: 'TimerStarted',
+        name: 'sleep',
+        payload: { durationMs },
+      });
+    }
+
+    throw new WorkflowSuspendedSignal({
+      kind: 'sleep',
+      stepSeq,
+      durationMs,
+      alreadyScheduled,
+    });
+  }
+
+  async waitForSignal<T = any>(
+    name: string,
+    options?: WaitForSignalOptions,
+  ): Promise<T | null> {
+    const stepSeq = this.nextStepSeq();
+    const recorded = this.historyByStepSeq.get(stepSeq);
+    const expectedSignature = `Signal:${name}`;
+    const existingSignature = this.describeRecorded(recorded);
+
+    if (existingSignature && existingSignature !== expectedSignature) {
+      throw new NonDeterminismError({
+        workflowId: this.workflowId,
+        stepSeq,
+        expected: existingSignature,
+        actual: expectedSignature,
+      });
+    }
+
+    // 1. Signal arrived and was bound to this stepSeq
+    if (recorded?.signalReceived) {
+      return (recorded.signalReceived.payload?.payload ?? null) as T;
+    }
+
+    // 2. Timeout fired before signal arrived -> deterministic timeout branch returns null
+    if (recorded?.timerFired) {
+      return null;
+    }
+
+    const timeoutMs =
+      options?.timeout !== undefined
+        ? parseDurationMs(options.timeout)
+        : undefined;
+
+    const alreadyScheduled = Boolean(recorded?.signalWaiting);
+    if (!alreadyScheduled) {
+      this.pendingEvents.push({
+        stepSeq,
+        type: 'SignalWaiting',
+        name,
+        payload: { timeoutMs: timeoutMs ?? null },
+      });
+    }
+
+    throw new WorkflowSuspendedSignal({
+      kind: 'signal',
+      stepSeq,
+      signalName: name,
+      timeoutMs,
+      alreadyScheduled,
     });
   }
 
@@ -146,28 +282,19 @@ export class ReplayWorkflowContext implements WorkflowContext {
   private recordInlineValue<T>(name: string, generator: () => T): T {
     const stepSeq = this.nextStepSeq();
     const recorded = this.historyByStepSeq.get(stepSeq);
+    const expectedSignature = `ValueRecorded:${name}`;
+    const existingSignature = this.describeRecorded(recorded);
 
-    // Determinism Guard: Ensure this stepSeq wasn't previously a Step
-    const existingStepEvt =
-      recorded?.scheduled ?? recorded?.completed ?? recorded?.failed;
-    if (existingStepEvt) {
+    if (existingSignature && existingSignature !== expectedSignature) {
       throw new NonDeterminismError({
         workflowId: this.workflowId,
         stepSeq,
-        expected: `Step:${existingStepEvt.name}`,
-        actual: `ValueRecorded:${name}`,
+        expected: existingSignature,
+        actual: expectedSignature,
       });
     }
 
     if (recorded?.valueRecorded) {
-      if (recorded.valueRecorded.name !== name) {
-        throw new NonDeterminismError({
-          workflowId: this.workflowId,
-          stepSeq,
-          expected: `ValueRecorded:${recorded.valueRecorded.name}`,
-          actual: `ValueRecorded:${name}`,
-        });
-      }
       return recorded.valueRecorded.payload.value as T;
     }
 

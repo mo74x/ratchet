@@ -3,6 +3,7 @@ import {
   runWorkflowTick,
   WorkflowRegistry,
   calculateBackoffWithJitter,
+  StepTimeoutError,
 } from '@ratchet/core';
 import { RatchetRepository, TaskRecord } from '@ratchet/store';
 
@@ -156,6 +157,49 @@ export class RatchetWorker {
           alreadyScheduled: tick.suspension.alreadyScheduled,
         },
       });
+    }else if (tick.status === 'suspended') {
+      const { suspension } = tick;
+      if (suspension.kind === 'step') {
+        await this.repo.completeWorkflowTick({
+          taskId: task.id,
+          leaseToken: task.leaseToken!,
+          workflowId: workflow.id,
+          newEvents: tick.newEvents,
+          outcome: {
+            status: 'suspended_step',
+            stepSeq: suspension.stepSeq,
+            stepName: suspension.stepName,
+            alreadyScheduled: suspension.alreadyScheduled,
+            timeoutMs: suspension.timeoutMs,
+            maxAttempts: suspension.maxAttempts,
+          },
+        });
+      } else if (suspension.kind === 'sleep') {
+        await this.repo.completeWorkflowTick({
+          taskId: task.id,
+          leaseToken: task.leaseToken!,
+          workflowId: workflow.id,
+          newEvents: tick.newEvents,
+          outcome: {
+            status: 'suspended_sleep',
+            stepSeq: suspension.stepSeq,
+            durationMs: suspension.durationMs,
+          },
+        });
+      } else if (suspension.kind === 'signal') {
+        await this.repo.completeWorkflowTick({
+          taskId: task.id,
+          leaseToken: task.leaseToken!,
+          workflowId: workflow.id,
+          newEvents: tick.newEvents,
+          outcome: {
+            status: 'suspended_signal',
+            stepSeq: suspension.stepSeq,
+            signalName: suspension.signalName,
+            timeoutMs: suspension.timeoutMs,
+          },
+        });
+      }
     }
   }
 
@@ -181,7 +225,11 @@ export class RatchetWorker {
       });
 
       const idempotencyKey = `${workflow.id}:${stepSeq}`;
-      const result = await handler(idempotencyKey);
+      const result = await this.executeWithTimeout(
+        () => handler(idempotencyKey),
+        stepName,
+        task.timeoutMs,
+      );
 
       if (this.options.beforeCommitStep) {
         await this.options.beforeCommitStep({
@@ -267,6 +315,32 @@ export class RatchetWorker {
       this.reaperTimer = null;
     }
     this.loopPromise = null;
+  }
+  
+  private async executeWithTimeout<T>(
+    fn: () => Promise<T> | T,
+    stepName: string,
+    timeoutMs: number | null,
+  ): Promise<T> {
+    if (!timeoutMs || timeoutMs <= 0) {
+      return await fn();
+    }
+
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([
+        Promise.resolve(fn()),
+        new Promise<T>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new StepTimeoutError(stepName, timeoutMs)),
+            timeoutMs,
+          );
+          timer.unref?.();
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   private async pollLoop(): Promise<void> {
