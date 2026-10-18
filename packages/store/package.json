@@ -8,6 +8,7 @@
     "migrate": "ts-node src/migrate.ts"
   },
   "dependencies": {
+    "@ratchet/core": "workspace:*",
     "pg": "^8.12.0"
   }
 }

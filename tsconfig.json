@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@ratchet/core": ["./packages/core/src/index.ts"],
+      "@ratchet/core/*": ["./packages/core/src/*"],
+      "@ratchet/store": ["./packages/store/src/index.ts"],
+      "@ratchet/store/*": ["./packages/store/src/*"]
+    }
+  },
+  "include": [
+    "examples/**/*",
+    "test/**/*"
+  ]
+}

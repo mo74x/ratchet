@@ -15,18 +15,6 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "experimentalDecorators": true,
-    "emitDecoratorMetadata": true,
-    "baseUrl": ".",
-    "paths": {
-      "@ratchet/core": [
-        "packages/core/src"
-      ],
-      "@ratchet/store": [
-        "packages/store/src"
-      ],
-      "@ratchet/agents": [
-        "packages/agents/src"
-      ]
-    }
+    "emitDecoratorMetadata": true
   }
 }
