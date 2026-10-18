@@ -2,5 +2,5 @@ packages:
   - "apps/*"
   - "packages/*"
 
-onlyBuiltDependencies:
-  - "@nestjs/core"
+allowBuilds:
+  '@nestjs/core': true

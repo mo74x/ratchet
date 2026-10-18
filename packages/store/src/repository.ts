@@ -1,6 +1,11 @@
 import * as crypto from 'crypto';
 import { PoolClient } from 'pg';
-import { NewWorkflowEvent, WorkflowEvent, WorkflowEventType } from '@ratchet/core';
+import {
+  calculateBackoffWithJitter,
+  NewWorkflowEvent,
+  WorkflowEvent,
+  WorkflowEventType,
+} from '@ratchet/core';
 import { Database } from './db';
 
 export type WorkflowStatus = 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled';
@@ -113,7 +118,7 @@ export class RatchetRepository {
       `UPDATE tasks
        SET status = 'leased',
            lease_token = $1::uuid,
-           lease_expires = now() + ($2 || ' seconds')::interval,
+           lease_expires = now() + ($2::text || ' seconds')::interval,
            attempt = attempt + 1,
            updated_at = now()
        WHERE id = (
@@ -240,7 +245,12 @@ export class RatchetRepository {
   }): Promise<boolean> {
     return this.db.withTransaction(async (client) => {
       if (params.attempt < params.maxAttempts) {
-        const delayMs = params.retryDelayMs ?? Math.min(1000 * 2 ** (params.attempt - 1), 30_000);
+        const delayMs =
+          params.retryDelayMs ??
+          calculateBackoffWithJitter(params.attempt, {
+            baseDelayMs: 200,
+            maxDelayMs: 10_000,
+          });
         const fence = await client.query(
           `UPDATE tasks
            SET status = 'pending',
@@ -366,5 +376,93 @@ export class RatchetRepository {
       leaseExpires: row.lease_expires,
       lastError: row.last_error,
     };
+  }
+
+  // Renamed from updateLeaseExpiration to heartbeatTask to be more descriptive
+  async heartbeatTask(
+    taskId: string,
+    leaseToken: string,
+    leaseDurationSeconds = 30,
+  ): Promise<boolean> {
+    const res = await this.db.query(
+      `UPDATE tasks
+       SET lease_expires = now() + ($3::text || ' seconds')::interval,
+           updated_at = now()
+       WHERE id = $1
+         AND lease_token = $2::uuid
+         AND status = 'leased'`,
+      [taskId, leaseToken, leaseDurationSeconds],
+    );
+    return res.rowCount === 1;
+  }
+
+  //Renamed from reaper to reapExpiredLeases for brevity and clarity
+  async reapExpiredLeases(batchSize = 100): Promise<{
+    requeued: number;
+    deadLettered: number;
+  }> {
+    return this.db.withTransaction(async (client) => {
+      const expiredRes = await client.query(
+        `SELECT * FROM tasks
+         WHERE status = 'leased' AND lease_expires <= now()
+         ORDER BY lease_expires ASC
+         FOR UPDATE SKIP LOCKED
+         LIMIT $1`,
+        [batchSize],
+      );
+
+      let requeued = 0;
+      let deadLettered = 0;
+
+      for (const row of expiredRes.rows) {
+        const task = this.mapTaskRow(row);
+
+        // Workflow replay ticks are always idempotent and re-queued;
+        // Step tasks are re-queued if attempt < maxAttempts.
+        if (task.kind === 'workflow' || task.attempt < task.maxAttempts) {
+          await client.query(
+            `UPDATE tasks
+             SET status = 'pending',
+                 lease_token = NULL,
+                 lease_expires = NULL,
+                 last_error = COALESCE(last_error, 'Lease expired before task completion'),
+                 run_at = now(),
+                 updated_at = now()
+             WHERE id = $1`,
+            [task.id],
+          );
+          requeued += 1;
+        } else {
+          // Step task exhausted maxAttempts via repeated lease expirations
+          const errMsg =
+            task.lastError ??
+            `Step lease expired after ${task.attempt} attempts`;
+          await client.query(
+            `UPDATE tasks
+             SET status = 'dead',
+                 lease_token = NULL,
+                 lease_expires = NULL,
+                 last_error = $2,
+                 updated_at = now()
+             WHERE id = $1`,
+            [task.id, errMsg],
+          );
+
+          await this.appendEventsTx(client, task.workflowId, [
+            {
+              stepSeq: task.stepSeq,
+              type: 'StepFailed',
+              name: task.stepName,
+              payload: { error: errMsg, attempts: task.attempt },
+            },
+          ]);
+
+          await this.enqueueWorkflowTickTx(client, task.workflowId);
+          deadLettered += 1;
+        }
+      }
+
+      return { requeued, deadLettered };
+    });
   }
 }

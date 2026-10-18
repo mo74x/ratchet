@@ -23,5 +23,17 @@ module.exports = {
         '^@ratchet/worker$': '<rootDir>/apps/worker/src/index.ts',
       },
     },
+    {
+      displayName: 'chaos',
+      preset: 'ts-jest',
+      testEnvironment: 'node',
+      rootDir: '<rootDir>',
+      testMatch: ['<rootDir>/test/chaos/**/*.chaos.spec.ts'],
+      moduleNameMapper: {
+        '^@ratchet/core$': '<rootDir>/packages/core/src/index.ts',
+        '^@ratchet/store$': '<rootDir>/packages/store/src/index.ts',
+        '^@ratchet/worker$': '<rootDir>/apps/worker/src/index.ts',
+      },
+    },
   ],
 };
