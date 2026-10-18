@@ -141,23 +141,7 @@ export class RatchetWorker {
         newEvents: tick.newEvents,
         outcome: { status: 'failed', error: tick.error.message },
       });
-    } else if (
-      tick.status === 'suspended' &&
-      tick.suspension.kind === 'step'
-    ) {
-      await this.repo.completeWorkflowTick({
-        taskId: task.id,
-        leaseToken: task.leaseToken!,
-        workflowId: workflow.id,
-        newEvents: tick.newEvents,
-        outcome: {
-          status: 'suspended_step',
-          stepSeq: tick.suspension.stepSeq,
-          stepName: tick.suspension.stepName,
-          alreadyScheduled: tick.suspension.alreadyScheduled,
-        },
-      });
-    }else if (tick.status === 'suspended') {
+    } else if (tick.status === 'suspended') {
       const { suspension } = tick;
       if (suspension.kind === 'step') {
         await this.repo.completeWorkflowTick({

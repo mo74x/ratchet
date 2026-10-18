@@ -72,6 +72,15 @@ importers:
         specifier: ^7.8.1
         version: 7.8.2
 
+  apps/timer:
+    dependencies:
+      '@ratchet/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@ratchet/store':
+        specifier: workspace:*
+        version: link:../../packages/store
+
   apps/worker:
     dependencies:
       '@ratchet/core':

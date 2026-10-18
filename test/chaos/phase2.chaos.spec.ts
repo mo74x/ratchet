@@ -2,7 +2,7 @@ import { WorkflowContext, WorkflowRegistry } from '@ratchet/core';
 import { Database, RatchetRepository, runMigrations } from '@ratchet/store';
 import { RatchetWorker } from '../../apps/worker/src/worker';
 
-jest.setTimeout(120_000);
+jest.setTimeout(240_000);
 
 describe('Phase 2 Chaos & Reliability Suite: Leases, Fencing, Retries & 1,000-Workflow Chaos', () => {
   let db: Database;

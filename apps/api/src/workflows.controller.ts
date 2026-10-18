@@ -17,6 +17,10 @@ export interface StartWorkflowDto {
   idempotencyKey?: string;
 }
 
+export interface SendSignalDto {
+  name: string;
+  payload?: unknown;
+}
 @Controller('workflows')
 export class WorkflowsController {
   constructor(private readonly repo: RatchetRepository) {}
@@ -57,6 +61,30 @@ export class WorkflowsController {
       workflowId: workflow.id,
       status: workflow.status,
       events,
+    };
+  }
+  @Post(':id/signal')
+  @HttpCode(HttpStatus.OK)
+  async sendSignal(@Param('id') id: string, @Body() body: SendSignalDto) {
+    if (!body?.name || typeof body.name !== 'string') {
+      throw new BadRequestException('Signal "name" is required.');
+    }
+
+    const workflow = await this.repo.getWorkflow(id);
+    if (!workflow) {
+      throw new NotFoundException(`Workflow ${id} not found.`);
+    }
+
+    const res = await this.repo.sendSignal({
+      workflowId: id,
+      name: body.name,
+      payload: body.payload ?? null,
+    });
+
+    return {
+      workflowId: id,
+      signalId: res.signalId,
+      deliveredImmediately: res.deliveredImmediately,
     };
   }
 }

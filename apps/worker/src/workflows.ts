@@ -45,5 +45,45 @@ export function createDefaultRegistry(
     },
   );
 
+  registry.register(
+    'onboard-customer',
+    async (
+      ctx: WorkflowContext,
+      input: { email: string; welcomeDelay?: string; kycTimeout?: string },
+    ) => {
+      const account = await ctx.step('create-account', async (key) => {
+        await stepSideEffectHook?.('create-account', 1, key);
+        return { id: `acc_${input.email.split('@')[0]}`, email: input.email };
+      });
+
+      await ctx.step('send-welcome', async (key) => {
+        await stepSideEffectHook?.('send-welcome', 2, key);
+        return { sentTo: account.id };
+      });
+
+      await ctx.sleep((input.welcomeDelay ?? '3d') as any);
+
+      const approved = await ctx.waitForSignal<{ approvedBy: string }>(
+        'kyc-approved',
+        { timeout: (input.kycTimeout ?? '7d') as any },
+      );
+
+      if (!approved) {
+        return ctx.fail('KYC timeout');
+      }
+
+      await ctx.step('activate', async (key) => {
+        await stepSideEffectHook?.('activate', 5, key);
+        return { activated: true, approvedBy: approved.approvedBy };
+      });
+
+      return {
+        accountId: account.id,
+        status: 'active',
+        approvedBy: approved.approvedBy,
+      };
+    },
+  );
+
   return registry;
 }

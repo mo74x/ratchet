@@ -37,7 +37,10 @@ describe('@ratchet/core replay engine', () => {
         stepSeq: 1,
         type: 'StepScheduled',
         name: 'step-1',
-        payload: {},
+        payload: {
+          timeoutMs: null,
+          maxAttempts: null,
+        },
       },
     ]);
   });

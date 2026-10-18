@@ -1,0 +1,13 @@
+{
+  "name": "@ratchet/timer",
+  "version": "0.1.0",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "ts-node src/main.ts"
+  },
+  "dependencies": {
+    "@ratchet/core": "workspace:*",
+    "@ratchet/store": "workspace:*"
+  }
+}

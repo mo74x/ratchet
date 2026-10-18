@@ -1,5 +1,6 @@
 /** @type {import('jest').Config} */
 module.exports = {
+  maxWorkers: 1,
   projects: [
     {
       displayName: 'core',

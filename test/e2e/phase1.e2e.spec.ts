@@ -33,8 +33,8 @@ describe('Phase 1 E2E: Durable Core & Crash Recovery', () => {
   });
 
   afterAll(async () => {
-    await app.close();
-    await db.close();
+    await app?.close();
+    await db?.close();
   });
 
   it('survives a worker crash after step 3 and finishes steps 4-5 without re-running steps 1-3', async () => {
